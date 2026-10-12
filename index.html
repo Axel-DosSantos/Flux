@@ -1782,6 +1782,53 @@ function findCorner() {
   }
   return null;
 }
+// CEILING CORNER: dashing upward into the underside of a ledge near its edge wraps you around the edge
+// and sends you running up the side of that block at super speed (the dash comes back).
+const CEIL_REACH = 16, CEIL_LOOK = 12;
+function findCeilCorner() {
+  if (P.dashDy > -0.1) return null;
+  const c0 = Math.floor(P.x / T), c1 = Math.floor((P.x + P.w - 1) / T);
+  let r = -1;
+  for (let rr = Math.floor((P.y - 1) / T); rr >= Math.floor((P.y - 1 - CEIL_LOOK) / T); rr--) {
+    let hit = false; for (let c = c0; c <= c1; c++) if (solidAt(c, rr)) hit = true;
+    if (hit) { r = rr; break; }
+  }
+  if (r < 0) return null;
+  const sides = P.dashDx > 0.1 ? [1] : P.dashDx < -0.1 ? [-1] : [1, -1];
+  let best = null;
+  for (const side of sides) {
+    for (let tx = c0 - 2; tx <= c1 + 2; tx++) {
+      let edge, nx;
+      if (side > 0) {
+        if (!(solidAt(tx - 1, r) && !solidAt(tx, r))) continue;
+        edge = tx * T; if (edge <= P.x || edge > P.x + P.w + CEIL_REACH) continue;
+        nx = edge;
+      } else {
+        if (!(solidAt(tx + 1, r) && !solidAt(tx, r))) continue;
+        edge = (tx + 1) * T; if (edge >= P.x + P.w || edge < P.x - CEIL_REACH) continue;
+        nx = edge - P.w;
+      }
+      // room to stand beside the block and to climb along it
+      // lift the body beside the block (feet just above its underside) so the wall run grips at once
+      const ny = Math.min(P.y, (r + 1) * T - P.h - 2);
+      if (collide(nx, ny, P.w, P.h) || collide(nx, ny - 2 * T, P.w, 2 * T)) continue;
+      const d = Math.abs(nx - P.x) + Math.abs(ny - P.y);
+      if (!best || d < best.d) best = { side, x: nx, y: ny, d };
+    }
+  }
+  return best;
+}
+function ceilCornerBoost(c) {
+  P.x = c.x; P.y = c.y;
+  P.dashT = 0; P.wallRun = true; P.wallSide = -c.side; P.vx = 0; P.vy = -RUN_MAX * 1.15;
+  P.runGrace = 0.5; P.dashRun = false; P.cornerPend = 0; P.lipT = 0; P.grounded = false; P.coyote = 0;
+  P.face = -c.side; P.cornerCD = 0.3;
+  P.canDash = false; refillDash();
+  P.sx = 0.65; P.sy = 1.45;
+  ring(c.side > 0 ? P.x : P.x + P.w, P.y, accent(), 12, 200);
+  techBurst('CORNER !', P.x + P.w / 2, P.y + P.h / 2, accent(), 'corner');
+  countStat('corners', 10, 'coin');
+}
 function moveX(d) {
   P.x += d;
   if (collide(P.x, P.y, P.w, P.h)) {
@@ -1983,6 +2030,7 @@ function update(dt) {
       return;
     }
     moveY(P.vy * dt);
+    if (P.dashDy < -0.1) { const cc = findCeilCorner(); if (cc) { ceilCornerBoost(cc); return; } }
     P.grounded = collide(P.x, P.y + 1, P.w, P.h);
     P.sx = 1.35; P.sy = 0.75;
     if (Math.random() < 0.8) parts.push({ x: P.x + P.w / 2, y: P.y + P.h / 2, vx: 0, vy: 0, life: 0.2, max: 0.2, c: C.pink, s: 3, g: 0 });
