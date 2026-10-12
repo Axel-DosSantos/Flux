@@ -920,6 +920,7 @@ function restartChapter() {
 function die() {
   if (P.dead) return;
   P.dead = true; P.deadT = 0.3; deaths++; roomDeaths++;
+  netFx('die');
   flow *= 0.3; flowLv = 0; flowMaxT = 0;
   stats.deaths = (stats.deaths || 0) + 1; if (stats.deaths >= 100) achieve('rouille');
   hitstop = 0.06; addShake(9); if (save.opts.flash) glitch = 0.28;
@@ -1067,8 +1068,42 @@ function updateFlow(dt) {
   flowMaxT = lv === 3 ? flowMaxT + dt : 0;
   if (flowMaxT >= 8) achieve('pedale');
 }
+/* tell the other players about a technique: a counter + kind + position in our presence */
+let fxSeq = 0;
+function netFx(kind) {
+  if (!roomApi || !(online || hubMode === 'multi')) return;
+  fxSeq++;
+  setPresence({ fxn: fxSeq, fxk: kind, fxx: Math.round(P.x), fxy: Math.round(P.y) });
+}
+const lastFx = {};
+const FX_TEXT = { hyper: 'HYPER !', corner: 'CORNER !', super: 'SUPER', die: '' };
+function checkRemoteFx(p, visible) {
+  const pr = p.presence || {};
+  const seq = typeof pr.fxn === 'number' ? pr.fxn : 0;
+  if (!(p.peer in lastFx)) { lastFx[p.peer] = seq; return; }   // don't replay what happened before we saw them
+  if (seq === lastFx[p.peer]) return;
+  lastFx[p.peer] = seq;
+  if (!visible || typeof pr.fxx !== 'number' || !(pr.fxk in FX_TEXT)) return;
+  const col = peerColor(p.peer), x = pr.fxx + P.w / 2, y = pr.fxy + P.h / 2;
+  if (pr.fxk === 'die') {
+    for (let i = 0; i < 22; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 260;
+      parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5, max: 0.5, c: i % 2 ? col : C.pink, s: 2, g: 500 });
+    }
+    return;
+  }
+  const big = pr.fxk !== 'super';
+  waves.push({ x, y, r: 3, life: big ? 0.36 : 0.22, max: big ? 0.36 : 0.22, col, sp: big ? 260 : 180 });
+  for (let i = 0; i < (big ? 18 : 8); i++) {
+    const a = Math.random() * Math.PI * 2, sp = 120 + Math.random() * 240;
+    parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.4, max: 0.4, c: i % 3 ? col : '#ffffff', s: 2, g: 250 });
+  }
+  pops.push({ x, y: y - 16, text: FX_TEXT[pr.fxk] + ' ' + peerName(p), t: 0.8, max: 0.8, big, col });
+  sfx(big ? 'remote' : 'super');
+}
 function techBurst(text, x, y, col, snd) {
   addFlow(18);
+  netFx(text.startsWith('HYPER') ? 'hyper' : 'corner');
   // the "juicy" moment: freeze, slow-mo, shockwave, coloured flash, burst of sparks, big text, chord
   hitstop = Math.max(hitstop, 0.06);
   slowmo = 0.1;
@@ -1348,7 +1383,7 @@ let roomApi = null, userApi = null, online = null;   // online = { rid, ch } whi
 let lobbyCh = 0, countT = 0, lastSeenRid = null, presT = 0;
 const names = {}, peerView = {};
 const PEER_COLORS = ['#ffd23e', '#52f59a', '#ff8a3d', '#b07cff', '#ff2e88', '#3ef0ff'];
-function peerColor(peer) { let h = 0; for (const c of peer) h = (h * 31 + c.charCodeAt(0)) | 0; return PEER_COLORS[Math.abs(h) % PEER_COLORS.length]; }
+function peerColor(peer) { return SKINS[skinOfPeer(peer)].energy; }
 function peerName(p) { return (p.presence && p.presence.name) || (p.by && names[p.by]) || (p.guest ? 'Invité' : 'Joueur'); }
 function setPresence(patch) {
   if (!roomApi) return;
@@ -1653,7 +1688,8 @@ function drawHubPeers() {
     const moving = Math.abs(pr.hx - v.x) > 0.5;
     v.x += (pr.hx - v.x) * 0.3; v.y += (pr.hy - v.y) * 0.3; v.a += moving ? 0.3 : 0;
     const col = peerColor(p.peer);
-    drawRobot(v.x + P.w / 2, v.y + P.h, moving ? 'run' + (Math.floor(v.a) & 3) : 'idle' + (Math.floor(clock * 2.2) & 1), col, pr.f < 0 ? -1 : 1, { alpha: 0.95 });
+    checkRemoteFx(p, true);
+    drawRobot(v.x + P.w / 2, v.y + P.h, moving ? 'run' + (Math.floor(v.a) & 3) : 'idle' + (Math.floor(clock * 2.2) & 1), col, pr.f < 0 ? -1 : 1, { alpha: 0.95, skin: skinOfPeer(p.peer) });
     txt(peerName(p), v.x + P.w / 2, v.y - 11, '700 8px "Chakra Petch", sans-serif', col, 'center', '1px');
   }
 }
@@ -1661,7 +1697,7 @@ function drawHubHUD() {
   txt(hubMode === 'multi' ? `SALON ${net && net.code ? net.code : 'MULTI'} · ${Math.min(4, multiCount())}/4` : 'HUB', 8, 10, '700 11px "Chakra Petch", sans-serif', accent(), 'left', '3px');
   txt('Marche jusqu\'à une porte, puis ↑ pour entrer', 8, 26, '500 10px "Chakra Petch", sans-serif', 'rgba(232,246,255,0.55)', 'left');
   if (hubMode === 'multi') {
-    const list = [{ name: 'Toi', col: C.white }].concat(otherPeers().filter(p => p.presence && p.presence.mh).slice(0, 3)
+    const list = [{ name: 'Toi', col: SKINS[mySkin()].energy }].concat(otherPeers().filter(p => p.presence && p.presence.mh).slice(0, 3)
       .map(p => ({ name: peerName(p), col: peerColor(p.peer), st: p.presence.st })));
     list.forEach((r, i) => txt(`${r.name}${r.st === 'race' ? ' (en course)' : ''}`, W - 8, 10 + i * 13, '700 10px "Chakra Petch", sans-serif', r.col, 'right', '1px'));
   }
@@ -1729,9 +1765,12 @@ function findCorner() {
   for (const side of [1, -1]) {
     if (P.dashDx * side < 0) continue;                 // dashing away from that side
     if (P.dashDx === 0 && P.dashDy >= 0) continue;     // straight down: no corner
-    const tx = side > 0 ? Math.floor((P.x + P.w + 3) / T) : Math.floor((P.x - 3) / T);
+    // an upward dash may start a little away from the wall (you jumped beside it): look up to 14 px out
+    const reachX = P.dashDy < -0.1 ? 14 : 3;
+    const cols = [...new Set([3, 8, reachX].filter(g => g <= reachX).map(g =>
+      side > 0 ? Math.floor((P.x + P.w + g) / T) : Math.floor((P.x - g) / T)))];
     const r0 = Math.floor((feet - CORNER_REACH) / T), r1 = Math.floor((feet + CORNER_REACH) / T);
-    for (let r = r0; r <= r1; r++) {
+    for (const tx of cols) for (let r = r0; r <= r1; r++) {
       if (!solidAt(tx, r) || solidAt(tx, r - 1)) continue;   // need the top tile of a block
       if (solidAt(myCol, r)) continue;                        // flat ground under me is not a corner
       const topY = r * T;
@@ -1910,6 +1949,7 @@ function update(dt) {
       } else {
         addShake(3);
         pops.push({ x: P.x + P.w / 2, y: P.y - 6, text: 'SUPER', t: 0.7, max: 0.7 });
+        netFx('super');
         addFlow(8);
         sfx('super');
       }
@@ -2467,6 +2507,33 @@ function drawDynamic() {
    so each pose only moves the parts. Glow pixels ('g' joints, 'G' visor and core) take the energy colour,
    which shows the dash state. Frames are pre-rendered once per pose and colour, then cached. */
 const ROBO = { o: '#090b18', d: '#363f63', m: '#505b88', l: '#7a87bd', c: '#2bb57f' };
+/* Skins: in multi every player gets a different one (ranked by connection id, the same order on every screen) */
+const SKINS = [
+  { name: 'Néon', energy: '#45ffc8', pal: ROBO },
+  { name: 'Braise', energy: '#ffb43e', pal: { o: '#140808', d: '#5c2a26', m: '#843a32', l: '#bd5a48', c: '#e6a23a' } },
+  { name: 'Améthyste', energy: '#c07cff', pal: { o: '#0e0818', d: '#3f2b63', m: '#5a4090', l: '#8a6ac8', c: '#d07cff' } },
+  { name: 'Sable', energy: '#4fc8ff', pal: { o: '#120e08', d: '#5e4d2f', m: '#86704a', l: '#bca170', c: '#4fc8ff' } },
+];
+function multiIds() {
+  if (!roomApi || !(online || hubMode === 'multi')) return null;
+  try {
+    return roomApi.peers().filter(p => p.kind === 'viewer' && (p.sameTab || (p.presence && p.presence.mh))).map(p => p.peer).sort();
+  } catch (e) { return null; }
+}
+function skinOfPeer(peer) {
+  const ids = multiIds();
+  if (!ids) return 1;
+  const i = ids.indexOf(peer);
+  return i < 0 ? 1 : i % SKINS.length;
+}
+function mySkin() {
+  const ids = multiIds();
+  if (!ids) return 0;
+  let me = null;
+  try { const p = roomApi.peers().find(x => x.sameTab); me = p && p.peer; } catch (e) {}
+  const i = me ? ids.indexOf(me) : -1;
+  return i < 0 ? 0 : i % SKINS.length;
+}
 const ENERGY = '#45ffc8', ENERGY_OFF = '#3b4766';
 const RB_W = 18, RB_H = 21, RB_PAD = 5, RB_S = 2;
 const RPART = {
@@ -2497,8 +2564,9 @@ function mixWhite(hex, k) {
   return `rgb(${f(r)},${f(g)},${f(b)})`;
 }
 const robotCache = new Map();
-function robotFrame(pose, energy, sil) {
-  const key = pose + '|' + energy + '|' + (sil || '');
+function robotFrame(pose, energy, sil, skin = 0) {
+  const key = pose + '|' + energy + '|' + (sil || '') + '|' + skin;
+  const PAL = SKINS[skin].pal;
   let c = robotCache.get(key);
   if (c) return c;
   c = document.createElement('canvas');
@@ -2516,7 +2584,7 @@ function robotFrame(pose, energy, sil) {
         const ch = row[rx];
         if (ch === '.') continue;
         if (ch === 'g' || ch === 'G') { (ch === 'G' ? bright : glow).push([ox + rx, oy + ry]); if (!sil) continue; }
-        px(ox + rx, oy + ry, sil || ROBO[ch]);
+        px(ox + rx, oy + ry, sil || PAL[ch]);
       }
     });
     if (part.j) for (const [jx, jy] of part.j) glow.push([ox + jx, oy + jy]);
@@ -2536,7 +2604,7 @@ function robotFrame(pose, energy, sil) {
 }
 /* Draw the robot with its feet centred on (cx, feetY). k scales the whole sprite (title screen). */
 function drawRobot(cx, feetY, pose, energy, face, opt = {}) {
-  const img = robotFrame(pose, energy, opt.sil);
+  const img = robotFrame(pose, energy, opt.sil, opt.skin || 0);
   const k = opt.k || 1, sx = (opt.sx || 1) * k, sy = (opt.sy || 1) * k;
   ctx.save();
   if (opt.alpha != null) ctx.globalAlpha = opt.alpha;
@@ -2579,16 +2647,17 @@ function drawPlayer() {
   }
   trail.forEach((t, i) => {
     const a = (i + 1) / trail.length * 0.3;
-    drawRobot(t.x, t.y, t.pose, ENERGY, t.face, { sil: t.f ? C.pink : ENERGY, alpha: a });
+    drawRobot(t.x, t.y, t.pose, ENERGY, t.face, { sil: t.f ? C.pink : SKINS[mySkin()].energy, alpha: a });
   });
-  const energy = P.dashT > 0 ? C.pink : (P.glowT > 0 ? '#ffffff' : (P.canDash ? ENERGY : ENERGY_OFF));
-  drawRobot(cx, by, pose, energy, P.face, { sx: P.sx, sy: P.sy, rot: P.wallRun ? P.wallSide * -0.25 : 0 });
+  const sk = mySkin();
+  const energy = P.dashT > 0 ? C.pink : (P.glowT > 0 ? '#ffffff' : (P.canDash ? SKINS[sk].energy : ENERGY_OFF));
+  drawRobot(cx, by, pose, energy, P.face, { sx: P.sx, sy: P.sy, rot: P.wallRun ? P.wallSide * -0.25 : 0, skin: sk });
   // recharge ring while the dash is cooling down
   if (!P.canDash && P.dashT <= 0 && P.dashCD > 0) {
     const k = 1 - Math.min(1, P.dashCD / DASH_CD);
     ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(cx, by - P.h / 2, 13, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = ENERGY; ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = SKINS[mySkin()].energy; ctx.globalAlpha = 0.8;
     ctx.beginPath(); ctx.arc(cx, by - P.h / 2, 13, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2); ctx.stroke();
     ctx.globalAlpha = 1;
   }
@@ -2598,6 +2667,7 @@ function drawRivals() {
   if (!online) return;
   for (const p of racersInMyRace()) {
     const pr = p.presence;
+    checkRemoteFx(p, pr.r === room && pr.st === 'race');
     if (pr.r !== room || pr.dd || pr.st !== 'race' || typeof pr.x !== 'number') continue;
     const v = peerView[p.peer] || (peerView[p.peer] = { x: pr.x, y: pr.y });
     v.x += (pr.x - v.x) * 0.45; v.y += (pr.y - v.y) * 0.45;
@@ -2606,14 +2676,14 @@ function drawRivals() {
     const moving = Math.abs(pr.x - v.x) > 0.4;
     v.a = (v.a || 0) + (moving ? 0.3 : 0);
     const pose = moving ? 'run' + (Math.floor(v.a) & 3) : 'idle' + (Math.floor(clock * 2.2) & 1);
-    drawRobot(v.x + P.w / 2, v.y + P.h, pose, col, pr.f < 0 ? -1 : 1, { alpha: 0.9 });
+    drawRobot(v.x + P.w / 2, v.y + P.h, pose, col, pr.f < 0 ? -1 : 1, { alpha: 0.9, skin: skinOfPeer(p.peer) });
     txt(peerName(p), v.x + P.w / 2, v.y - 11, '700 8px "Chakra Petch", sans-serif', col, 'center', '1px');
   }
 }
 
 function drawRaceBoard(x, y, align = 'left') {
   if (!online) return;
-  const rows = [{ me: true, name: 'Toi', col: C.white, done: state === 'end', t: time, r: room, n: deaths }];
+  const rows = [{ me: true, name: 'Toi', col: SKINS[mySkin()].energy, done: state === 'end', t: time, r: room, n: deaths }];
   for (const p of racersInMyRace()) {
     const pr = p.presence;
     rows.push({ name: peerName(p), col: peerColor(p.peer), done: pr.st === 'done', t: +pr.t || 0, r: pr.r | 0, n: pr.n | 0 });
@@ -3161,6 +3231,7 @@ function sfx(n) {
     case 'swap': tone(phase ? 660 : 880, 0.06, 'square', 0.05); tone(phase ? 990 : 1320, 0.08, 'square', 0.04, 1, AC.currentTime + 0.04); break;
     case 'flowup': tone(880, 0.08, 'triangle', 0.05); tone(1320, 0.12, 'triangle', 0.05, 1, AC.currentTime + 0.06); break;
     case 'flowmax': { const t = AC.currentTime; sweep(t, 0.5, 0.08, 400, 8000); [1046.5, 1318.5, 1568, 2093].forEach((f, k) => tone(f, 0.25, 'square', 0.04, 1, t + k * 0.05)); break; }
+    case 'remote': { const t = AC.currentTime; [784, 1046.5, 1318.5].forEach((f, k) => tone(f, 0.18, 'triangle', 0.035, 1, t + k * 0.03)); break; }
     case 'whoosh': sweep(AC.currentTime, 0.22, 0.09, 300, 3500); break;
     case 'hyper': {
       const t = AC.currentTime;
