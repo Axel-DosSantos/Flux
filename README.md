@@ -3,7 +3,7 @@
 Platformer néon nerveux, dans l'esprit de Celeste et Katana Zero : wall run, dash, hyper, corner, blocs qui basculent.
 Un seul fichier HTML, sans installation.
 
-**Jouer :** https://axel-dossantos.github.io/flux/
+**Jouer :** https://axel-dossantos.github.io/Flux/
 
 ## Contenu
 
